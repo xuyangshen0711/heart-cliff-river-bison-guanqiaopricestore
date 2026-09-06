@@ -21,6 +21,8 @@
     "format": "prettier --write ."
   },
   "dependencies": {
+    "@cloudbase/js-sdk": "^3.9.2",
+    "@cloudbase/signature-nodejs": "^2.0.0",
     "@electric-sql/pglite": "^0.5.4",
     "@hookform/resolvers": "^5.7.0",
     "@radix-ui/react-accordion": "^1.2.12",

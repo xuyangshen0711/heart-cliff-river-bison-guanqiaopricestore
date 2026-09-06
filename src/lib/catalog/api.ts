@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import seedFile from "./seed.json";
 import type { Style } from "./types";
+import { cloudBaseConfigured, cloudBaseData, getCloudBase } from "@/lib/cloudbase";
 
 type StyleRow = {
   code: string;
@@ -22,10 +23,7 @@ type StyleRow = {
 };
 
 type CatalogSql = {
-  query<T = Record<string, unknown>>(
-    text: string,
-    params?: unknown[],
-  ): Promise<T[]>;
+  query<T = Record<string, unknown>>(text: string, params?: unknown[]): Promise<T[]>;
 };
 
 function asStringArray(v: unknown): string[] {
@@ -106,7 +104,42 @@ async function ensureSeeded() {
   }
 }
 
+const styleColumns =
+  "code, aliases, colors, size_range, price, composition, weight, standard, safety, note, memo, category, season, photo, listed";
+
+function styleToRow(data: z.infer<typeof styleInput>, photo = data.photo) {
+  const code = data.code.trim();
+  return {
+    code,
+    aliases: data.aliases.length ? data.aliases : [code],
+    colors: data.colors.filter(Boolean),
+    size_range: data.sizeRange,
+    price: data.price ?? null,
+    composition: data.composition,
+    weight: data.weight,
+    standard: data.standard,
+    safety: data.safety,
+    note: data.note,
+    memo: data.memo,
+    category: data.category,
+    season: data.season,
+    photo,
+    listed: data.listed,
+    updated_at: new Date().toISOString(),
+  };
+}
+
 export const listStyles = createServerFn({ method: "GET" }).handler(async () => {
+  if (cloudBaseConfigured) {
+    const db = await getCloudBase();
+    const response = await db
+      .from("styles")
+      .select(styleColumns)
+      .order("season", { ascending: false })
+      .order("category", { ascending: true })
+      .order("code", { ascending: true });
+    return cloudBaseData<StyleRow[]>(response, "读取").map(rowToStyle);
+  }
   await ensureSeeded();
   const { getSql } = await import("@/lib/db");
   const sql = await getSql();
@@ -121,6 +154,12 @@ export const listStyles = createServerFn({ method: "GET" }).handler(async () => 
 export const getStyle = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ code: z.string().min(1) }).parse(d))
   .handler(async ({ data }) => {
+    if (cloudBaseConfigured) {
+      const db = await getCloudBase();
+      const response = await db.from("styles").select(styleColumns).eq("code", data.code).limit(1);
+      const rows = cloudBaseData<StyleRow[]>(response, "读取");
+      return rows[0] ? rowToStyle(rows[0]) : null;
+    }
     await ensureSeeded();
     const { getSql } = await import("@/lib/db");
     const sql = await getSql();
@@ -156,10 +195,27 @@ export const saveStyle = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const code = data.code.trim();
     const aliases = data.aliases.length ? data.aliases : [code];
+    if (cloudBaseConfigured) {
+      const db = await getCloudBase();
+      if (data.isNew) {
+        const existing = await db.from("styles").select("code").eq("code", code).limit(1);
+        if (cloudBaseData<Array<{ code: string }>>(existing, "检查").length) {
+          throw new Error(`款号 ${code} 已存在`);
+        }
+        cloudBaseData(await db.from("styles").insert(styleToRow(data)), "新增");
+      } else {
+        const update = styleToRow(data);
+        if (!data.photo) delete (update as Partial<typeof update>).photo;
+        cloudBaseData(await db.from("styles").update(update).eq("code", code), "更新");
+      }
+      return { ok: true, code };
+    }
     const { getSql } = await import("@/lib/db");
     const sql = await getSql();
     if (data.isNew) {
-      const exists = await sql<{ n: number }>`select count(*)::int as n from styles where code = ${code}`;
+      const exists = await sql<{
+        n: number;
+      }>`select count(*)::int as n from styles where code = ${code}`;
       if ((exists[0]?.n ?? 0) > 0) throw new Error(`款号 ${code} 已存在`);
       await sql.query(
         `insert into styles
@@ -227,6 +283,11 @@ export const saveStyle = createServerFn({ method: "POST" })
 export const deleteStyle = createServerFn({ method: "POST" })
   .validator((d: unknown) => z.object({ code: z.string().min(1) }).parse(d))
   .handler(async ({ data }) => {
+    if (cloudBaseConfigured) {
+      const db = await getCloudBase();
+      cloudBaseData(await db.from("styles").delete().eq("code", data.code), "删除");
+      return { ok: true };
+    }
     const { getSql } = await import("@/lib/db");
     const sql = await getSql();
     await sql.query(`delete from styles where code = $1`, [data.code]);
